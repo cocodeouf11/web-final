@@ -374,7 +374,7 @@ export default function SignaturePage() {
                       type="button"
                       onClick={validateSignature}
                       disabled={submitting || !hasDrawn}
-                      className="flex-[1.5] h-11 rounded-xl bg-gradient-to-r from-brand to-blue-600 text-white shadow-md hover:shadow-lg hover:opacity-95 transition-all"
+                      className="flex-[1.5] h-11 rounded-xl bg-brand text-white shadow-md hover:shadow-lg transition-all disabled:opacity-50"
                       data-testid="btn-validate-signature"
                     >
                       {submitting ? (

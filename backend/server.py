@@ -357,19 +357,21 @@ async def upload_file(
 
 def _attestation_fields():
     """Preset form fields for Attestation Simplifiée Cerfa N°13948*05 (A4, 595x842pts).
-    All fields are on page 1, positioned on the dotted lines circled in red on the spec image.
+    Coordinates extracted directly from the PDF dotted lines via pdfplumber.
+    All fields are on page 1.
     """
     return [
-        # Identité (top section)
-        {"name": "nom",         "label": "Nom",         "type": "text", "page": 1, "x": 85,  "y": 683, "width": 195, "height": 14, "required": True},
-        {"name": "prenom",      "label": "Prénom",      "type": "text", "page": 1, "x": 360, "y": 683, "width": 200, "height": 14, "required": True},
-        {"name": "adresse",     "label": "Adresse",     "type": "text", "page": 1, "x": 110, "y": 673, "width": 170, "height": 14, "required": True},
-        {"name": "code_postal", "label": "Code postal", "type": "text", "page": 1, "x": 220, "y": 673, "width": 100, "height": 14, "required": True},
-        {"name": "commune",     "label": "Commune",     "type": "text", "page": 1, "x": 410, "y": 673, "width": 150, "height": 14, "required": True},
-        # Bottom (Fait à / Le / Signature)
-        {"name": "fait_a",      "label": "Fait à",      "type": "text",      "page": 1, "x": 285, "y": 163, "width": 160, "height": 14, "required": True},
-        {"name": "le_date",     "label": "Le",          "type": "date_auto", "page": 1, "x": 475, "y": 163, "width": 80,  "height": 14, "required": False},
-        # Signature anchor (placed by default just below the "Signature du client" line)
+        # Identité — line "Nom :…………… Prénom :……………" at y≈683
+        {"name": "nom",         "label": "Nom",         "type": "text", "page": 1, "x": 80,  "y": 683, "width": 170, "height": 14, "required": True},
+        {"name": "prenom",      "label": "Prénom",      "type": "text", "page": 1, "x": 312, "y": 683, "width": 195, "height": 14, "required": True},
+        # Line "Adresse :…… Code postal :… Commune ……" at y≈673
+        {"name": "adresse",     "label": "Adresse",     "type": "text", "page": 1, "x": 92,  "y": 673, "width": 160, "height": 14, "required": True},
+        {"name": "code_postal", "label": "Code postal", "type": "text", "page": 1, "x": 325, "y": 673, "width": 35,  "height": 14, "required": True},
+        {"name": "commune",     "label": "Commune",     "type": "text", "page": 1, "x": 401, "y": 673, "width": 110, "height": 14, "required": True},
+        # Bottom: "Fait à…………, le……………." at y≈163
+        {"name": "fait_a",      "label": "Fait à",      "type": "text",      "page": 1, "x": 263, "y": 163, "width": 90, "height": 14, "required": True},
+        {"name": "le_date",     "label": "Le",          "type": "date_auto", "page": 1, "x": 368, "y": 163, "width": 55, "height": 14, "required": False},
+        # Signature anchor below "Signature du client ou de son représentant :"
         {"name": "__signature__","label":"Signature",   "type": "signature", "page": 1, "x": 320, "y": 70,  "width": 210, "height": 60, "required": True},
     ]
 
@@ -1182,6 +1184,25 @@ async def on_startup():
             ))
             await session.commit()
             logger.info("[seed] Added 'Attestation Simplifiée' document type")
+
+        # Migration: refresh field coordinates on existing unsigned Attestation Simplifiée files
+        # (fixes the v1 wrong-x-positions bug; only touches files still in 'unsigned' state)
+        import json as _json
+        unsigned_atts = (await session.execute(
+            select(FileModel).where(
+                FileModel.document_type == "Attestation Simplifiée",
+                FileModel.status == "unsigned",
+            )
+        )).scalars().all()
+        new_preset_json = _json.dumps(_attestation_fields())
+        refreshed = 0
+        for att in unsigned_atts:
+            if att.fields != new_preset_json:
+                att.fields = new_preset_json
+                refreshed += 1
+        if refreshed:
+            await session.commit()
+            logger.info(f"[migration] Refreshed Attestation Simplifiée field coords on {refreshed} unsigned files")
 
         # Step 1 — Sync the super_admin entry (always identified by role, not username)
         super_in_config = next((e for e in USERS if e.get("role") == "super_admin"), None)
