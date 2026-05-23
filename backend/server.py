@@ -417,6 +417,56 @@ async def download_file(file_id: str, signed: bool = False, user=Depends(get_cur
     return {"filename": filename, "content_b64": content_b64}
 
 
+@api_router.get("/files/{file_id}/download-merged")
+async def download_folder_merged(file_id: str, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
+    """Stream a merged PDF for a folder: parent + all linked children concatenated in sort_order.
+    For each document, uses the signed content if available, else the original.
+    If the target file is a child, falls back to its parent's folder.
+    If the target has no children and no parent, returns its own PDF.
+    """
+    from pypdf import PdfWriter
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
+        raise HTTPException(404, "Fichier introuvable")
+    # Resolve folder root
+    if f.parent_file_id:
+        root_q = select(FileModel).where(FileModel.id == f.parent_file_id)
+        root_q = _files_filter(root_q, user)
+        root = (await db.execute(root_q)).scalar_one_or_none() or f
+    else:
+        root = f
+    # Get children
+    kids_q = select(FileModel).where(FileModel.parent_file_id == root.id).order_by(FileModel.sort_order)
+    kids_q = _files_filter(kids_q, user)
+    kids = (await db.execute(kids_q)).scalars().all()
+    all_docs = [root] + list(kids)
+    writer = PdfWriter()
+    for d in all_docs:
+        b64 = d.signed_content_b64 if d.signed_content_b64 else d.content_b64
+        try:
+            pdf_bytes = base64.b64decode(b64)
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            for p in reader.pages:
+                writer.add_page(p)
+        except Exception as e:
+            logger.warning(f"Skip {d.id} in merge: {e}")
+    out = io.BytesIO()
+    writer.write(out)
+    data = out.getvalue()
+    base = os.path.splitext(root.filename or "dossier")[0]
+    filename = f"Dossier_{base}.pdf"
+    return FastAPIResponse(
+        content=data,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @api_router.delete("/files/{file_id}")
 async def delete_file(file_id: str, user=Depends(get_current_admin), db: AsyncSession = Depends(get_db)):
     q = select(FileModel).where(FileModel.id == file_id)

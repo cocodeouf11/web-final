@@ -1,0 +1,37 @@
+{
+  "summary": "Sprint 5 testing: (1) GET /api/files/{id}/download-merged endpoint, (2) re-enabled Position signature & Position personnalisée on folder parent rows, (3) Télécharger PDF action on every row (folder/child/standalone). Backend: 8/8 pytest tests PASS. Frontend (Playwright on prod URL): folder-row menu shows menu-position, menu-custom-position, menu-download — all clickable, both position dialogs open, and the merged-PDF download produces a valid 728KB PDF named Dossier_<base>.pdf.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_sprint5.py",
+    "/app/test_reports/pytest/sprint5_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AdminDashboard.jsx is now ~1316 lines — well over the 700-line guideline. The folder-grouping memo, downloadPdf helper, link-document dialog, rename dialog, and types-manager dialog should be extracted into separate components/hooks for maintainability. Same recommendation was made in iteration_2.",
+    "downloadPdf (AdminDashboard.jsx:431-477) silently allows the Authorization header to be omitted when api.defaults.headers.common.Authorization is unset (httpOnly cookie auth would still work via credentials:'include', but if the app is ever served from a different origin without proper CORS allow-credentials, downloads will 401). Suggest centralising the fetch helper through `api.get('/files/{id}/download-merged', { responseType: 'blob' })` to inherit interceptors and auth.",
+    "Backend /api/files/{file_id}/download-merged (server.py:420) catches per-doc PdfReader exceptions and only logs a warning — if EVERY doc fails to read, the endpoint silently returns a near-empty PdfWriter output (no pages) with 200 OK. Consider returning 500 or a clearer error when the resulting writer has 0 pages.",
+    "Filename builder uses os.path.splitext on root.filename (server.py:458) but the response Content-Disposition does not RFC-5987 encode non-ASCII characters. French filenames with accents could trigger client-side mojibake — wrap with filename*=UTF-8'' if needed.",
+    "Frontend downloadPdf for folder uses file.filename (current row label) to build the 'Dossier_<base>.pdf' suggestion, but the server independently builds the same name from root.filename. If file_id refers to a child, the server returns Dossier_<parent_base>.pdf while the client save dialog suggests Dossier_<child_base>.pdf — minor cosmetic mismatch (server's Content-Disposition wins in our test, confirmed name 'Dossier_<parent_uuid>.pdf')."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_sprint5.py"
+  ],
+  "success_rate": {
+    "backend": "100% (8/8)",
+    "frontend": "100% on covered flows (folder menu items, position dialogs open, merged download)"
+  },
+  "test_credentials": "admin / admin123 (from /app/memory/test_credentials.md)",
+  "seed_data_creation": "test_sprint5.py creates TEST_solo.pdf, TEST_parent_merge.pdf and 2 children TEST_child1.pdf/TEST_child2.pdf via reportlab; fixtures delete them in teardown. One leftover folder (Dossier_ddeca944...) remained from earlier iteration in SQLite — admin can clean via UI.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Sprint 5 covered by /app/backend/tests/test_sprint5.py (8 tests, all pass). Endpoint GET /api/files/{id}/download-merged returns application/pdf binary with Content-Disposition 'attachment; filename=\"Dossier_<base>.pdf\"'. Page count = parent_pages + sum(child_pages by sort_order). Child id falls back to parent's folder. /download (single file) still works as JSON {filename, content_b64}. Both require admin auth (401 without). Frontend testids confirmed: parent row uses 'row-file-<id>' and child rows use 'row-child-<id>' (NOT row-file-) — so to enumerate children iterate '[data-testid^=row-child-]'. Folder download label is 'Télécharger le dossier (PDF fusionné)'; single/child label is 'Télécharger PDF'. menu-position and menu-custom-position now appear on folder parent (only gated by f.status !== 'signed').",
+  "rca of the issue": "No bugs found. Implementation matches spec: (a) !isFolder gate was correctly removed from the parent's menu-position and menu-custom-position items (AdminDashboard.jsx:836-845), (b) downloadPdf branches on childrenByParent length to choose merged vs single endpoint, (c) backend correctly resolves child->parent->merge fallback and prioritises signed_content_b64."
+}

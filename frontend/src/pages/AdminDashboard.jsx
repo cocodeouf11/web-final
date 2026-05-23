@@ -20,7 +20,7 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
-  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move, FileCheck2, Files, Pencil, Folder, FolderOpen, ChevronDown, ChevronRight,
+  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move, FileCheck2, Files, Pencil, Folder, FolderOpen, ChevronDown, ChevronRight, Download,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
@@ -428,6 +428,54 @@ export default function AdminDashboard() {
 
   const toggleExpand = (id) => setExpanded((p) => ({ ...p, [id]: !p[id] }));
 
+  const downloadPdf = async (file) => {
+    const isFolder = (childrenByParent[file.id] || []).length > 0;
+    try {
+      if (isFolder) {
+        // Use merged endpoint via fetch to get a binary stream
+        const url = `${process.env.REACT_APP_BACKEND_URL}/api/files/${file.id}/download-merged`;
+        const res = await fetch(url, {
+          credentials: "include",
+          headers: api.defaults.headers.common.Authorization
+            ? { Authorization: api.defaults.headers.common.Authorization }
+            : {},
+        });
+        if (!res.ok) throw new Error("Téléchargement impossible");
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = `Dossier_${(file.filename || "dossier").replace(/\.pdf$/i, "")}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(blobUrl);
+        toast.success("Dossier téléchargé");
+      } else {
+        // Single file via base64 endpoint
+        const isSigned = file.status === "signed";
+        const { data } = await api.get(`/files/${file.id}/download`, {
+          params: isSigned ? { signed: true } : {},
+        });
+        const byteString = atob(data.content_b64);
+        const bytes = new Uint8Array(byteString.length);
+        for (let i = 0; i < byteString.length; i++) bytes[i] = byteString.charCodeAt(i);
+        const blob = new Blob([bytes], { type: "application/pdf" });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = data.filename || file.filename || "document.pdf";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(blobUrl);
+        toast.success(`Téléchargé : ${a.download}`);
+      }
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Téléchargement impossible");
+    }
+  };
+
   const copyCode = (code) => {
     navigator.clipboard?.writeText(code).catch(() => {});
     toast.success("Code copié");
@@ -785,16 +833,19 @@ export default function AdminDashboard() {
                                     <Tag className="w-4 h-4 mr-2" /> Modifier le type
                                   </DropdownMenuItem>
                                 )}
-                                {!isFolder && f.status !== "signed" && (
+                                {f.status !== "signed" && (
                                   <DropdownMenuItem onClick={() => openPosition(f)} data-testid={`menu-position-${f.id}`}>
                                     <MoveDiagonal className="w-4 h-4 mr-2" /> Position signature
                                   </DropdownMenuItem>
                                 )}
-                                {!isFolder && f.status !== "signed" && (
+                                {f.status !== "signed" && (
                                   <DropdownMenuItem onClick={() => setCustomPosFile(f)} data-testid={`menu-custom-position-${f.id}`}>
                                     <Move className="w-4 h-4 mr-2" /> Position personnalisée (drag &amp; drop)
                                   </DropdownMenuItem>
                                 )}
+                                <DropdownMenuItem onClick={() => downloadPdf(f)} data-testid={`menu-download-${f.id}`}>
+                                  <Download className="w-4 h-4 mr-2" /> Télécharger {isFolder ? "le dossier (PDF fusionné)" : "PDF"}
+                                </DropdownMenuItem>
                                 {!isFolder && (
                                   <DropdownMenuItem onClick={() => handleToggleStatus(f)} data-testid={`menu-toggle-${f.id}`}>
                                     <FileSignature className="w-4 h-4 mr-2" /> Marquer {f.status === "signed" ? "non signé" : "signé"}
@@ -877,6 +928,9 @@ export default function AdminDashboard() {
                                   </DropdownMenuItem>
                                   <DropdownMenuItem onClick={() => openRename(c)} data-testid={`menu-rename-${c.id}`}>
                                     <Pencil className="w-4 h-4 mr-2" /> Renommer
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => downloadPdf(c)} data-testid={`menu-download-${c.id}`}>
+                                    <Download className="w-4 h-4 mr-2" /> Télécharger PDF
                                   </DropdownMenuItem>
                                   {c.status !== "signed" && (
                                     <DropdownMenuItem onClick={() => setCustomPosFile(c)} data-testid={`menu-custom-position-${c.id}`}>
