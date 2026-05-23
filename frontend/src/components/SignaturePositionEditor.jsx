@@ -47,6 +47,7 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
   const blobUrlRef = useRef(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pageReady, setPageReady] = useState(false);  // becomes true after canvas is rendered for the current page
 
   // Box state in PDF points (origin bottom-left). page is 1-based.
   const [box, setBox] = useState({ x: 0, y: 0, width: DEFAULT_BOX.width, height: DEFAULT_BOX.height, page: 1 });
@@ -58,6 +59,10 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
     if (!file) { setPdfDoc(null); return; }
     let cancelled = false;
     setLoading(true);
+    setPageReady(false);
+    setPageHeightPts(0);
+    setPageWidthPts(0);
+    setRenderSize({ w: 0, h: 0 });
     (async () => {
       try {
         await ensureWorker();
@@ -116,6 +121,7 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current || !containerRef.current) return;
     let cancelled = false;
+    setPageReady(false);  // hide box until the new page is painted
     (async () => {
       const page = await pdfDoc.getPage(pageNum);
       if (cancelled) return;
@@ -140,6 +146,10 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
       setRenderSize({ w: viewport.width, h: viewport.height });
       setPageHeightPts(baseViewport.height);
       setPageWidthPts(baseViewport.width);
+      // Wait one paint frame to make sure the canvas is on screen before revealing the box
+      requestAnimationFrame(() => {
+        if (!cancelled) setPageReady(true);
+      });
     })();
     return () => { cancelled = true; };
   }, [pdfDoc, pageNum]);
@@ -275,44 +285,42 @@ export default function SignaturePositionEditor({ file, onClose, onSaved }) {
         </div>
 
         <div ref={containerRef} className="flex-1 overflow-auto p-4 bg-muted/40 relative">
-          {loading && (
-            <div className="flex items-center justify-center h-full text-muted-foreground">
-              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Chargement…
+          {(loading || !pageReady) && (
+            <div className="absolute inset-0 flex items-center justify-center text-muted-foreground bg-muted/60 backdrop-blur-sm z-10">
+              <Loader2 className="w-5 h-5 animate-spin mr-2" /> Chargement du document…
             </div>
           )}
-          {!loading && (
-            <div className="relative inline-block" style={{ width: renderSize.w || "auto" }}>
-              <canvas
-                ref={canvasRef}
-                className="rounded-md shadow-md bg-white block"
-                style={{ display: "block" }}
-              />
-              {screenBox && (
+          <div className="relative inline-block" style={{ width: renderSize.w || "auto" }}>
+            <canvas
+              ref={canvasRef}
+              className="rounded-md shadow-md bg-white block"
+              style={{ display: "block" }}
+            />
+            {pageReady && screenBox && (
+              <div
+                className="absolute border-2 border-brand bg-brand/15 backdrop-blur-[1px] rounded-md cursor-move select-none flex items-center justify-center"
+                style={{
+                  left: screenBox.left,
+                  top: screenBox.top,
+                  width: screenBox.width,
+                  height: screenBox.height,
+                }}
+                onPointerDown={(e) => onPointerDown(e, "move")}
+                data-testid="editor-box"
+              >
+                <span className="text-brand font-medium text-xs uppercase tracking-wider pointer-events-none inline-flex items-center gap-1.5">
+                  <Move className="w-3.5 h-3.5" /> Signature ici
+                </span>
+                {/* Resize handle */}
                 <div
-                  className="absolute border-2 border-brand bg-brand/15 backdrop-blur-[1px] rounded-md cursor-move select-none flex items-center justify-center"
-                  style={{
-                    left: screenBox.left,
-                    top: screenBox.top,
-                    width: screenBox.width,
-                    height: screenBox.height,
-                  }}
-                  onPointerDown={(e) => onPointerDown(e, "move")}
-                  data-testid="editor-box"
-                >
-                  <span className="text-brand font-medium text-xs uppercase tracking-wider pointer-events-none inline-flex items-center gap-1.5">
-                    <Move className="w-3.5 h-3.5" /> Signature ici
-                  </span>
-                  {/* Resize handle */}
-                  <div
-                    className="absolute -right-1.5 -bottom-1.5 w-4 h-4 bg-brand border-2 border-white dark:border-card rounded-sm cursor-se-resize shadow-md"
-                    onPointerDown={(e) => onPointerDown(e, "resize")}
-                    data-testid="editor-resize-handle"
-                    title="Redimensionner"
+                  className="absolute -right-1.5 -bottom-1.5 w-4 h-4 bg-brand border-2 border-white dark:border-card rounded-sm cursor-se-resize shadow-md"
+                  onPointerDown={(e) => onPointerDown(e, "resize")}
+                  data-testid="editor-resize-handle"
+                  title="Redimensionner"
                   />
                 </div>
               )}
             </div>
-          )}
         </div>
 
         <DialogFooter className="p-5 border-t border-border gap-2 flex-wrap">

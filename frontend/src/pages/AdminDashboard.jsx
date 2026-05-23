@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -20,7 +20,7 @@ import {
 import {
   FileText, Upload, Trash2, Eye, KeyRound, MoreHorizontal, LogOut, Search, Copy,
   CheckCircle2, Clock, FileSignature, Filter, Users, ShieldCheck, FolderKanban, MoveDiagonal,
-  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move, FileCheck2, Files,
+  Database, ArrowDownUp, Link2, Tag, Settings, Plus, X, Paperclip, Move, FileCheck2, Files, Pencil, Folder, FolderOpen, ChevronDown, ChevronRight,
 } from "lucide-react";
 import { toast } from "sonner";
 import api, { formatApiError } from "../lib/api";
@@ -90,6 +90,9 @@ export default function AdminDashboard() {
   const [linkMode, setLinkMode] = useState("upload");  // 'upload' | 'existing'
   const [linkExistingChild, setLinkExistingChild] = useState("");
   const [customPosFile, setCustomPosFile] = useState(null);  // file for free drag&drop signature placement
+  const [renameFile, setRenameFile] = useState(null);  // file being renamed
+  const [renameValue, setRenameValue] = useState("");
+  const [expanded, setExpanded] = useState({});  // {parentId: true} for folder expansion
   const linkFileRef = useRef(null);
   const fileInputRef = useRef(null);
 
@@ -119,24 +122,60 @@ export default function AdminDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewFile?.blobUrl]);
 
-  const stats = useMemo(() => ({
-    total: files.length,
-    signed: files.filter((f) => f.status === "signed").length,
-    unsigned: files.filter((f) => f.status === "unsigned").length,
-  }), [files]);
+  // Group files into "folders": each parent (no parent_file_id) carries its children.
+  // Children are filtered out from the top-level list.
+  const childrenByParent = useMemo(() => {
+    const map = {};
+    for (const f of files) {
+      if (f.parent_file_id) {
+        (map[f.parent_file_id] = map[f.parent_file_id] || []).push(f);
+      }
+    }
+    // Sort children by sort_order
+    Object.values(map).forEach((arr) => arr.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)));
+    return map;
+  }, [files]);
+
+  const stats = useMemo(() => {
+    // Count parents only (children belong to a folder)
+    const parents = files.filter((f) => !f.parent_file_id);
+    return {
+      total: parents.length,
+      signed: parents.filter((f) => {
+        const kids = childrenByParent[f.id] || [];
+        const all = [f, ...kids];
+        return all.every((x) => x.status === "signed");
+      }).length,
+      unsigned: parents.filter((f) => {
+        const kids = childrenByParent[f.id] || [];
+        const all = [f, ...kids];
+        return !all.every((x) => x.status === "signed");
+      }).length,
+    };
+  }, [files, childrenByParent]);
 
   const filtered = useMemo(() => {
-    let list = [...files];
-    if (filter === "signed") list = list.filter((f) => f.status === "signed");
-    if (filter === "unsigned") list = list.filter((f) => f.status === "unsigned");
+    // Top-level parents only
+    let list = files.filter((f) => !f.parent_file_id);
+    // For the folder status (signed/unsigned), aggregate over children too
+    const folderStatus = (f) => {
+      const kids = childrenByParent[f.id] || [];
+      const all = [f, ...kids];
+      return all.every((x) => x.status === "signed") ? "signed" : "unsigned";
+    };
+    if (filter === "signed") list = list.filter((f) => folderStatus(f) === "signed");
+    if (filter === "unsigned") list = list.filter((f) => folderStatus(f) === "unsigned");
     if (search.trim()) {
       const s = search.toLowerCase();
-      list = list.filter((f) =>
-        f.filename.toLowerCase().includes(s) ||
-        (f.access_code || "").toLowerCase().includes(s)
-      );
+      list = list.filter((f) => {
+        const kids = childrenByParent[f.id] || [];
+        const all = [f, ...kids];
+        return all.some((x) =>
+          x.filename.toLowerCase().includes(s) ||
+          (f.access_code || "").toLowerCase().includes(s)
+        );
+      });
     }
-    // Sort
     const cmp = (a, b, key) => {
       const va = a[key] || "";
       const vb = b[key] || "";
@@ -151,7 +190,7 @@ export default function AdminDashboard() {
     else if (sortBy === "signed_desc") list.sort((a, b) => cmp(b, a, "signed_at"));
     else if (sortBy === "signed_asc") list.sort((a, b) => cmp(a, b, "signed_at"));
     return list;
-  }, [files, filter, search, sortBy]);
+  }, [files, filter, search, sortBy, childrenByParent]);
 
   const sortLabel = {
     created_desc: "Plus récent",
@@ -357,11 +396,37 @@ export default function AdminDashboard() {
         description: "Les champs Nom, Prénom, Adresse, Code postal, Commune, Fait à et la signature seront remplis lors de la signature.",
         duration: 6000,
       });
+      setExpanded((p) => ({ ...p, [file.id]: true }));  // auto-expand the folder
       await loadFiles();
     } catch (e) {
       toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
     }
   };
+
+  const openRename = (file) => {
+    setRenameFile(file);
+    setRenameValue((file.filename || "").replace(/\.pdf$/i, ""));
+  };
+
+  const saveRename = async () => {
+    if (!renameFile) return;
+    const newName = renameValue.trim();
+    if (!newName) {
+      toast.error("Nom invalide");
+      return;
+    }
+    try {
+      await api.patch(`/files/${renameFile.id}/rename`, { filename: newName });
+      toast.success(`Renommé : ${newName}.pdf`);
+      setRenameFile(null);
+      setRenameValue("");
+      await loadFiles();
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail) || "Erreur");
+    }
+  };
+
+  const toggleExpand = (id) => setExpanded((p) => ({ ...p, [id]: !p[id] }));
 
   const copyCode = (code) => {
     navigator.clipboard?.writeText(code).catch(() => {});
@@ -596,18 +661,49 @@ export default function AdminDashboard() {
                         </TableCell>
                       </TableRow>
                     ) : (
-                      filtered.map((f) => (
-                        <TableRow key={f.id} className="hover:bg-muted/40" data-testid={`row-file-${f.id}`}>
+                      filtered.map((f) => {
+                        const kids = childrenByParent[f.id] || [];
+                        const isFolder = kids.length > 0;
+                        const isExpanded = !!expanded[f.id];
+                        const folderStatus = isFolder
+                          ? ([f, ...kids].every((x) => x.status === "signed") ? "signed" : "unsigned")
+                          : f.status;
+                        const folderSignedAt = isFolder
+                          ? (folderStatus === "signed" ? [f, ...kids].map((x) => x.signed_at).filter(Boolean).sort().pop() : null)
+                          : f.signed_at;
+                        return (
+                        <Fragment key={f.id}>
+                        <TableRow className={`hover:bg-muted/40 ${isFolder ? "bg-muted/20" : ""}`} data-testid={`row-file-${f.id}`}>
                           <TableCell className="py-4">
                             <div className="flex items-center gap-3">
-                              <div className="w-9 h-9 rounded-lg bg-brand/10 flex items-center justify-center flex-shrink-0">
-                                <FileText className="w-4 h-4 text-brand" strokeWidth={1.6} />
-                              </div>
+                              {isFolder ? (
+                                <button
+                                  onClick={() => toggleExpand(f.id)}
+                                  className="flex items-center justify-center w-9 h-9 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 transition-colors"
+                                  data-testid={`btn-expand-${f.id}`}
+                                  title={isExpanded ? "Replier le dossier" : "Déplier le dossier"}
+                                >
+                                  {isExpanded
+                                    ? <FolderOpen className="w-4 h-4 text-amber-600 dark:text-amber-400" strokeWidth={1.6} />
+                                    : <Folder className="w-4 h-4 text-amber-600 dark:text-amber-400" strokeWidth={1.6} />
+                                  }
+                                </button>
+                              ) : (
+                                <div className="w-9 h-9 rounded-lg bg-brand/10 flex items-center justify-center flex-shrink-0">
+                                  <FileText className="w-4 h-4 text-brand" strokeWidth={1.6} />
+                                </div>
+                              )}
                               <div className="min-w-0">
                                 <div className="text-sm font-medium text-foreground truncate max-w-[280px] flex items-center gap-2">
-                                  <span className="truncate">{f.filename}</span>
+                                  {isFolder ? (
+                                    <button onClick={() => toggleExpand(f.id)} className="truncate text-left hover:underline" data-testid={`btn-folder-name-${f.id}`}>
+                                      Dossier — {f.filename.replace(/\.pdf$/i, "")}
+                                    </button>
+                                  ) : (
+                                    <span className="truncate">{f.filename}</span>
+                                  )}
                                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-brand/10 text-brand text-[10px] font-semibold uppercase tracking-wider flex-shrink-0">
-                                    <Tag className="w-2.5 h-2.5" /> {f.document_type || "Devis"}
+                                    <Tag className="w-2.5 h-2.5" /> {isFolder ? `${1 + kids.length} docs` : (f.document_type || "Devis")}
                                   </span>
                                 </div>
                                 <div className="text-xs text-muted-foreground">
@@ -615,7 +711,7 @@ export default function AdminDashboard() {
                                   {user?.role === "super_admin" && f.created_by_username && (
                                     <span className="ml-2">· par <span className="font-medium">{f.created_by_username}</span></span>
                                   )}
-                                  {f.signature_position && f.status !== "signed" && (
+                                  {!isFolder && f.signature_position && f.status !== "signed" && (
                                     <span className="ml-2 inline-flex items-center gap-1 opacity-70">
                                       <MoveDiagonal className="w-3 h-3" />
                                       {(f.fields || []).some((x) => x.type === "signature")
@@ -630,9 +726,9 @@ export default function AdminDashboard() {
                           <TableCell className="text-sm text-foreground/80">
                             {formatDate(f.created_at)}
                           </TableCell>
-                          <TableCell><StatusBadge status={f.status} /></TableCell>
+                          <TableCell><StatusBadge status={folderStatus} /></TableCell>
                           <TableCell className="text-sm text-foreground/80" data-testid={`signed-at-${f.id}`}>
-                            {f.status === "signed" ? formatDateTime(f.signed_at) : "—"}
+                            {folderStatus === "signed" ? formatDateTime(folderSignedAt) : "—"}
                           </TableCell>
                           <TableCell>
                             {f.access_code ? (
@@ -640,6 +736,7 @@ export default function AdminDashboard() {
                                 onClick={() => copyCode(f.access_code)}
                                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-muted hover:bg-muted/70 transition-colors font-mono text-xs text-foreground"
                                 data-testid={`btn-copy-code-${f.id}`}
+                                title={isFolder ? "Code dossier — signe tous les documents" : "Code d'accès"}
                               >
                                 {f.access_code}
                                 <Copy className="w-3 h-3 opacity-60" />
@@ -650,7 +747,7 @@ export default function AdminDashboard() {
                                 onClick={() => handleGenerateCode(f.id)}
                                 data-testid={`btn-generate-code-${f.id}`}
                               >
-                                <KeyRound className="w-3.5 h-3.5 mr-1.5" /> Générer
+                                <KeyRound className="w-3.5 h-3.5 mr-1.5" /> Générer {isFolder ? "code dossier" : ""}
                               </Button>
                             )}
                           </TableCell>
@@ -664,6 +761,9 @@ export default function AdminDashboard() {
                               <DropdownMenuContent align="end">
                                 <DropdownMenuItem onClick={() => handlePreview(f)} data-testid={`menu-view-${f.id}`}>
                                   <Eye className="w-4 h-4 mr-2" /> Voir
+                                </DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => openRename(f)} data-testid={`menu-rename-${f.id}`}>
+                                  <Pencil className="w-4 h-4 mr-2" /> Renommer {isFolder ? "le dossier" : ""}
                                 </DropdownMenuItem>
                                 {f.access_code && (
                                   <DropdownMenuItem onClick={() => copyDirectLink(f)} data-testid={`menu-link-${f.id}`}>
@@ -680,22 +780,26 @@ export default function AdminDashboard() {
                                     <FileCheck2 className="w-4 h-4 mr-2" /> Lier Attestation Simplifiée
                                   </DropdownMenuItem>
                                 )}
-                                <DropdownMenuItem onClick={() => openTypeEdit(f)} data-testid={`menu-type-${f.id}`}>
-                                  <Tag className="w-4 h-4 mr-2" /> Modifier le type
-                                </DropdownMenuItem>
-                                {f.status !== "signed" && (
+                                {!isFolder && (
+                                  <DropdownMenuItem onClick={() => openTypeEdit(f)} data-testid={`menu-type-${f.id}`}>
+                                    <Tag className="w-4 h-4 mr-2" /> Modifier le type
+                                  </DropdownMenuItem>
+                                )}
+                                {!isFolder && f.status !== "signed" && (
                                   <DropdownMenuItem onClick={() => openPosition(f)} data-testid={`menu-position-${f.id}`}>
                                     <MoveDiagonal className="w-4 h-4 mr-2" /> Position signature
                                   </DropdownMenuItem>
                                 )}
-                                {f.status !== "signed" && (
+                                {!isFolder && f.status !== "signed" && (
                                   <DropdownMenuItem onClick={() => setCustomPosFile(f)} data-testid={`menu-custom-position-${f.id}`}>
                                     <Move className="w-4 h-4 mr-2" /> Position personnalisée (drag &amp; drop)
                                   </DropdownMenuItem>
                                 )}
-                                <DropdownMenuItem onClick={() => handleToggleStatus(f)} data-testid={`menu-toggle-${f.id}`}>
-                                  <FileSignature className="w-4 h-4 mr-2" /> Marquer {f.status === "signed" ? "non signé" : "signé"}
-                                </DropdownMenuItem>
+                                {!isFolder && (
+                                  <DropdownMenuItem onClick={() => handleToggleStatus(f)} data-testid={`menu-toggle-${f.id}`}>
+                                    <FileSignature className="w-4 h-4 mr-2" /> Marquer {f.status === "signed" ? "non signé" : "signé"}
+                                  </DropdownMenuItem>
+                                )}
                                 {!f.access_code && (
                                   <DropdownMenuItem onClick={() => handleGenerateCode(f.id)} data-testid={`menu-code-${f.id}`}>
                                     <KeyRound className="w-4 h-4 mr-2" /> Générer un code
@@ -705,14 +809,16 @@ export default function AdminDashboard() {
                                 <AlertDialog>
                                   <AlertDialogTrigger asChild>
                                     <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-destructive focus:text-destructive" data-testid={`menu-delete-${f.id}`}>
-                                      <Trash2 className="w-4 h-4 mr-2" /> Supprimer
+                                      <Trash2 className="w-4 h-4 mr-2" /> Supprimer {isFolder ? "le dossier" : ""}
                                     </DropdownMenuItem>
                                   </AlertDialogTrigger>
                                   <AlertDialogContent>
                                     <AlertDialogHeader>
-                                      <AlertDialogTitle>Supprimer ce fichier ?</AlertDialogTitle>
+                                      <AlertDialogTitle>{isFolder ? "Supprimer ce dossier ?" : "Supprimer ce fichier ?"}</AlertDialogTitle>
                                       <AlertDialogDescription>
-                                        Cette action est irréversible. Le fichier "{f.filename}" et son code d'accès seront définitivement supprimés.
+                                        {isFolder
+                                          ? `Le dossier "${f.filename}" et ses ${kids.length} document(s) lié(s) seront supprimés définitivement.`
+                                          : `Le fichier "${f.filename}" et son code d'accès seront supprimés définitivement.`}
                                       </AlertDialogDescription>
                                     </AlertDialogHeader>
                                     <AlertDialogFooter>
@@ -731,7 +837,85 @@ export default function AdminDashboard() {
                             </DropdownMenu>
                           </TableCell>
                         </TableRow>
-                      ))
+                        {/* Child rows when folder expanded */}
+                        {isFolder && isExpanded && kids.map((c) => (
+                          <TableRow key={c.id} className="hover:bg-muted/40 bg-background/50" data-testid={`row-child-${c.id}`}>
+                            <TableCell className="py-3">
+                              <div className="flex items-center gap-3 pl-10">
+                                <div className="w-7 h-7 rounded-md bg-brand/10 flex items-center justify-center flex-shrink-0">
+                                  <FileText className="w-3.5 h-3.5 text-brand" strokeWidth={1.6} />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="text-sm font-medium text-foreground truncate max-w-[260px] flex items-center gap-2">
+                                    <span className="truncate">↳ {c.signed_filename || c.filename}</span>
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-brand/10 text-brand text-[10px] font-semibold uppercase tracking-wider flex-shrink-0">
+                                      <Tag className="w-2.5 h-2.5" /> {c.document_type || "Devis"}
+                                    </span>
+                                  </div>
+                                  <div className="text-xs text-muted-foreground">
+                                    {(c.size / 1024).toFixed(1)} KB
+                                  </div>
+                                </div>
+                              </div>
+                            </TableCell>
+                            <TableCell className="text-xs text-muted-foreground">—</TableCell>
+                            <TableCell><StatusBadge status={c.status} /></TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {c.status === "signed" ? formatDateTime(c.signed_at) : "—"}
+                            </TableCell>
+                            <TableCell><span className="text-xs text-muted-foreground italic">code dossier</span></TableCell>
+                            <TableCell className="text-right">
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="ghost" size="sm" className="h-8 w-8 p-0 rounded-lg" data-testid={`btn-actions-${c.id}`}>
+                                    <MoreHorizontal className="w-4 h-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onClick={() => handlePreview(c)} data-testid={`menu-view-${c.id}`}>
+                                    <Eye className="w-4 h-4 mr-2" /> Voir
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => openRename(c)} data-testid={`menu-rename-${c.id}`}>
+                                    <Pencil className="w-4 h-4 mr-2" /> Renommer
+                                  </DropdownMenuItem>
+                                  {c.status !== "signed" && (
+                                    <DropdownMenuItem onClick={() => setCustomPosFile(c)} data-testid={`menu-custom-position-${c.id}`}>
+                                      <Move className="w-4 h-4 mr-2" /> Position signature
+                                    </DropdownMenuItem>
+                                  )}
+                                  <DropdownMenuSeparator />
+                                  <AlertDialog>
+                                    <AlertDialogTrigger asChild>
+                                      <DropdownMenuItem onSelect={(e) => e.preventDefault()} className="text-destructive focus:text-destructive" data-testid={`menu-delete-${c.id}`}>
+                                        <Trash2 className="w-4 h-4 mr-2" /> Retirer du dossier
+                                      </DropdownMenuItem>
+                                    </AlertDialogTrigger>
+                                    <AlertDialogContent>
+                                      <AlertDialogHeader>
+                                        <AlertDialogTitle>Supprimer ce document du dossier ?</AlertDialogTitle>
+                                        <AlertDialogDescription>
+                                          "{c.filename}" sera supprimé définitivement du dossier.
+                                        </AlertDialogDescription>
+                                      </AlertDialogHeader>
+                                      <AlertDialogFooter>
+                                        <AlertDialogCancel>Annuler</AlertDialogCancel>
+                                        <AlertDialogAction
+                                          className="bg-destructive text-destructive-foreground hover:opacity-90"
+                                          onClick={() => handleDelete(c.id)}
+                                        >
+                                          Supprimer
+                                        </AlertDialogAction>
+                                      </AlertDialogFooter>
+                                    </AlertDialogContent>
+                                  </AlertDialog>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        </Fragment>
+                        );
+                      })
                     )}
                   </TableBody>
                 </Table>
@@ -969,6 +1153,51 @@ export default function AdminDashboard() {
         onClose={() => setCustomPosFile(null)}
         onSaved={() => { setCustomPosFile(null); loadFiles(); }}
       />
+
+      {/* Rename dialog */}
+      <Dialog open={!!renameFile} onOpenChange={(o) => !o && setRenameFile(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-display tracking-tight">
+              <Pencil className="w-4 h-4 inline mr-2 text-brand" />
+              Renommer {(childrenByParent[renameFile?.id] || []).length > 0 ? "le dossier" : "le fichier"}
+            </DialogTitle>
+            <DialogDescription>
+              Nom actuel : <span className="font-mono text-xs">{renameFile?.filename}</span>
+              {(childrenByParent[renameFile?.id] || []).length > 0 && (
+                <span className="block mt-1.5 text-xs">
+                  Les documents liés signés seront renommés automatiquement avec le nouveau préfixe.
+                </span>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <form
+            onSubmit={(e) => { e.preventDefault(); saveRename(); }}
+            className="space-y-4"
+            data-testid="rename-form"
+          >
+            <div className="flex items-center gap-2">
+              <Input
+                value={renameValue}
+                onChange={(e) => setRenameValue(e.target.value)}
+                placeholder="Nouveau nom (sans extension)"
+                className="flex-1"
+                autoFocus
+                data-testid="input-rename"
+              />
+              <span className="text-sm text-muted-foreground font-mono">.pdf</span>
+            </div>
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setRenameFile(null)} data-testid="btn-rename-cancel">
+                Annuler
+              </Button>
+              <Button type="submit" className="bg-brand text-white" data-testid="btn-rename-save">
+                Enregistrer
+              </Button>
+            </DialogFooter>
+          </form>
+        </DialogContent>
+      </Dialog>
 
       {/* Types manager dialog */}
       <Dialog open={typesManagerOpen} onOpenChange={setTypesManagerOpen}>

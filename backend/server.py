@@ -157,6 +157,10 @@ class FileTypeUpdate(BaseModel):
     document_type: str
 
 
+class FileRename(BaseModel):
+    filename: str
+
+
 class FieldsUpdate(BaseModel):
     """Update form fields for a file."""
     fields: list  # list of dicts {name, label, type, page, x, y, width, height, required}
@@ -505,6 +509,59 @@ async def update_document_type(
             f.fields = _json.dumps(_attestation_fields())
     await db.commit()
     return {"ok": True, "document_type": new_type, "signature_position": f.signature_position}
+
+
+@api_router.patch("/files/{file_id}/rename")
+async def rename_file(
+    file_id: str,
+    payload: FileRename,
+    user=Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a file. Keeps the '.pdf' extension. If this is a parent (folder root),
+    refresh children's `signed_filename` so the combined `{parent}+{child}.pdf` stays consistent.
+    """
+    new_name = (payload.filename or "").strip()
+    if not new_name:
+        raise HTTPException(400, "Nom invalide")
+    if not new_name.lower().endswith(".pdf"):
+        new_name = new_name + ".pdf"
+    if len(new_name) > 250:
+        raise HTTPException(400, "Nom trop long (max 250 caractères)")
+
+    q = select(FileModel).where(FileModel.id == file_id)
+    q = _files_filter(q, user)
+    f = (await db.execute(q)).scalar_one_or_none()
+    if not f:
+        raise HTTPException(404, "Fichier introuvable")
+
+    old_name = f.filename
+    f.filename = new_name
+
+    # Refresh combined signed_filename for children if this is a folder root
+    if not f.parent_file_id:
+        children = (await db.execute(
+            select(FileModel).where(FileModel.parent_file_id == f.id)
+        )).scalars().all()
+        parent_base = os.path.splitext(new_name)[0]
+        for c in children:
+            if c.signed_filename:
+                child_base = os.path.splitext(c.filename or "doc")[0]
+                c.signed_filename = f"{parent_base}+{child_base}.pdf"
+
+    # If this is a child, refresh its own signed_filename relative to its parent's current name
+    if f.parent_file_id and f.signed_filename:
+        parent = (await db.execute(
+            select(FileModel).where(FileModel.id == f.parent_file_id)
+        )).scalar_one_or_none()
+        if parent:
+            parent_base = os.path.splitext(parent.filename or "doc")[0]
+            child_base = os.path.splitext(new_name)[0]
+            f.signed_filename = f"{parent_base}+{child_base}.pdf"
+
+    await db.commit()
+    return {"ok": True, "filename": new_name, "previous": old_name}
+
 
 
 @api_router.patch("/files/{file_id}/fields")
